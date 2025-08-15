@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wbazi.js - 八字排盘工具集测试</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 700px;
+            margin: 20px auto;
+            padding: 0 15px;
+            background-color: #f8f9fa;
+        }
+        h1, h2 {
+            color: #2c3e50;
+            border-bottom: 2px solid #e0e0e0;
+            padding-bottom: 10px;
+        }
+        .container {
+            background-color: #fff;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+        .form-group input {
+            width: calc(100% - 20px);
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #e9ecef;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #495057;
+            text-align: center;
+            letter-spacing: 5px;
+        }
+        .info {
+            font-size: 0.9em;
+            color: #6c757d;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>Wbazi.js 测试页面</h1>
+        
+        <div class="form-group">
+            <label for="datetime">公历日期和时间</label>
+            <input type="datetime-local" id="datetime" value="1990-08-15T10:30">
+        </div>
+
+        <div class="form-group">
+            <label for="longitude">出生地经度</label>
+            <input type="number" id="longitude" value="116.40" step="0.01">
+            <p class="info">例如：北京 116.4, 上海 121.4, 成都 104.0, 乌鲁木齐 87.6</p>
+        </div>
+
+        <button onclick="calculateBazi()">计算八字</button>
+
+        <h2>计算结果</h2>
+        <div id="result">
+            [请在此处查看结果]
+        </div>
+    </div>
+
+    <script src="wbazi.js"></script>
+
+    <script>
+        // 页面加载时设置默认时间为当前时间
+        function setDefaultDateTime() {
+            const now = new Date();
+            // 格式化为 YYYY-MM-DDTHH:mm
+            const year = now.getFullYear();
+            const month = (now.getMonth() + 1).toString().padStart(2, '0');
+            const day = now.getDate().toString().padStart(2, '0');
+            const hours = now.getHours().toString().padStart(2, '0');
+            const minutes = now.getMinutes().toString().padStart(2, '0');
+            
+            const localDateTime = `${year}-${month}-${day}T${hours}:${minutes}`;
+            document.getElementById('datetime').value = localDateTime;
+        }
+        
+        window.onload = setDefaultDateTime;
+
+
+        function calculateBazi() {
+            const datetimeInput = document.getElementById('datetime').value;
+            const longitudeInput = parseFloat(document.getElementById('longitude').value);
+            const resultDiv = document.getElementById('result');
+
+            if (!datetimeInput || isNaN(longitudeInput)) {
+                resultDiv.textContent = "错误：请输入有效的日期时间和经度。";
+                resultDiv.style.color = 'red';
+                return;
+            }
+
+            // 从 datetime-local 输入中解析日期和时间
+            const date = new Date(datetimeInput);
+            const year = date.getFullYear();
+            const month = date.getMonth() + 1; // getMonth() 返回 0-11
+            const day = date.getDate();
+            const hour = date.getHours();
+            const minute = date.getMinutes();
+            const second = date.getSeconds();
+
+            try {
+                // 1. 实例化 Wbazi
+                const baziInstance = new Wbazi(year, month, day, hour, minute, second, longitudeInput);
+                
+                // 2. 调用 getBazi 方法获取八字数组
+                const baziArray = baziInstance.getBazi();
+                
+                // 3. 格式化并显示结果
+                resultDiv.textContent = baziArray.join(' ');
+                resultDiv.style.color = '#495057'; // 恢复默认颜色
+
+            } catch (e) {
+                resultDiv.textContent = "计算失败：" + e.message;
+                resultDiv.style.color = 'red';
+            }
+        }
+    </script>
+
+</body>
+</html>
