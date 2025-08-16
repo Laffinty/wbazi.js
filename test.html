@@ -34,12 +34,21 @@
             font-weight: bold;
             color: #555;
         }
-        .form-group input {
-            width: calc(100% - 20px);
+        .form-group input[type="datetime-local"],
+        .form-group input[type="number"] {
+            width: calc(100% - 22px);
             padding: 10px;
             border: 1px solid #ccc;
             border-radius: 4px;
             font-size: 16px;
+        }
+        .gender-group label {
+            display: inline-block;
+            margin-right: 20px;
+            font-weight: normal;
+        }
+        .gender-group input[type="radio"] {
+            margin-right: 5px;
         }
         button {
             background-color: #007bff;
@@ -50,6 +59,7 @@
             cursor: pointer;
             font-size: 16px;
             transition: background-color 0.3s;
+            width: 100%;
         }
         button:hover {
             background-color: #0056b3;
@@ -65,6 +75,7 @@
             color: #495057;
             text-align: center;
             letter-spacing: 5px;
+            word-wrap: break-word;
         }
         .info {
             font-size: 0.9em;
@@ -80,13 +91,20 @@
         
         <div class="form-group">
             <label for="datetime">公历日期和时间</label>
-            <input type="datetime-local" id="datetime" value="1990-08-15T10:30">
+            <input type="datetime-local" id="datetime">
+        </div>
+
+        <div class="form-group gender-group">
+            <label>性别</label>
+            <label><input type="radio" name="gender" value="男" checked> 男</label>
+            <label><input type="radio" name="gender" value="女"> 女</label>
         </div>
 
         <div class="form-group">
             <label for="longitude">出生地经度</label>
             <input type="number" id="longitude" value="116.40" step="0.01">
-            <p class="info">例如：北京 116.4, 上海 121.4, 成都 104.0, 乌鲁木齐 87.6</p>
+            <p class="info">请使用十进制数字。<strong>东经为正数，西经为负数。</strong><br>
+                例如：北京 116.4, 上海 121.4, 纽约 -74.0, 洛杉矶 -118.2</p>
         </div>
 
         <button onclick="calculateBazi()">计算八字</button>
@@ -97,6 +115,7 @@
         </div>
     </div>
 
+    <!-- 引入八字排盘库 -->
     <script src="wbazi.js"></script>
 
     <script>
@@ -120,6 +139,8 @@
         function calculateBazi() {
             const datetimeInput = document.getElementById('datetime').value;
             const longitudeInput = parseFloat(document.getElementById('longitude').value);
+            // 获取选中的性别
+            const genderInput = document.querySelector('input[name="gender"]:checked').value;
             const resultDiv = document.getElementById('result');
 
             if (!datetimeInput || isNaN(longitudeInput)) {
@@ -138,8 +159,8 @@
             const second = date.getSeconds();
 
             try {
-                // 1. 实例化 Wbazi
-                const baziInstance = new Wbazi(year, month, day, hour, minute, second, longitudeInput);
+                // 1. 实例化 Wbazi, 传入性别参数
+                const baziInstance = new Wbazi(year, month, day, hour, minute, second, longitudeInput, genderInput);
                 
                 // 2. 调用 getBazi 方法获取八字数组
                 const baziArray = baziInstance.getBazi();

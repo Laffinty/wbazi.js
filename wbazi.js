@@ -1,385 +1,293 @@
-(function(window) {
+/**
+ * Wbazi.js - 一个现代、高精度的八字排盘JavaScript库。
+ * 本库使用天文算法计算节气，而非依赖固定的查找表，以确保高精度。
+ * 它被设计为单文件、模块化的结构。
+ */
+(function(root, factory) {
+    // 兼容各种模块化环境 (AMD, CommonJS, and browser globals)
+    if (typeof define === 'function' && define.amd) {
+        define([], factory);
+    } else if (typeof module === 'object' && module.exports) {
+        module.exports = factory();
+    } else {
+        root.Wbazi = factory();
+    }
+}(typeof self !== 'undefined' ? self : this, function() {
     'use strict';
 
-    // -------------------------------------------------------------------------
-    // 内部模块：常量定义 (Constants)
-    // -------------------------------------------------------------------------
-    const Constants = {
-        // 天干
-        HEAVENLY_STEMS: ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸'],
-        // 地支
-        EARTHLY_BRANCHES: ['子', '丑', '寅', '卯', '辰', '巳', '午', '未', '申', '酉', '戌', '亥'],
-        // 儒略日计算基准 (J2000.0)
-        JD_EPOCH: 2451545.0,
-        // 日柱计算基准：2000年1月1日 12:00 UT (庚辰日)
-        // (2451545 - 0.5) % 60 = 36 (庚辰)
-        DAY_PILLAR_EPOCH_JD: 2451545.0,
-        DAY_PILLAR_EPOCH_INDEX: 36, // 庚辰在60甲子中的索引 (从0开始)
-        // 年柱计算基准：2000年是庚辰年
-        YEAR_PILLAR_EPOCH_GREGORIAN: 2000,
-        YEAR_PILLAR_EPOCH_INDEX: 16, // 庚辰在60甲子中的索引
-        // 24节气对应的太阳黄经度数
-        SOLAR_TERMS_LONGITUDE: [
+    // --- 内部私有作用域：核心模块 ---
+
+    // 模块：基础常量和数据
+    const _constants = {
+        TIAN_GAN: ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸'],
+        DI_ZHI: ['子', '丑', '寅', '卯', '辰', '巳', '午', '未', '申', '酉', '戌', '亥'],
+        JIAZI: [], // 将由 _ganzhiModule 初始化
+        // 24节气的太阳黄经度数
+        SOLAR_TERM_ANGLES: [
             315, 330, 345, 0, 15, 30, 45, 60, 75, 90, 105, 120,
             135, 150, 165, 180, 195, 210, 225, 240, 255, 270, 285, 300
         ],
-        // 月柱天干速查表 (年干索引 -> 月支索引 -> 月干索引)
-        MONTH_STEM_LOOKUP: , // 甲己年
-            , // 乙庚年
-            , // 丙辛年
-            , // 丁壬年
-              // 戊癸年
-        ],
-        // 时柱天干速查表 (日干索引 -> 时支索引 -> 时干索引)
-        HOUR_STEM_LOOKUP: , // 甲己日
-            , // 乙庚日
-            , // 丙辛日
-            , // 丁壬日
-              // 戊癸日
-        ]
+        // 日柱计算的纪元：1900年1月1日 00:00 UTC 是 甲戌日。
+        // 甲为0 (0-indexed), 戌为10 (0-indexed)。
+        // 纪元的儒略日数：2415020.5
+        // 甲戌的干支索引是 10。
+        EPOCH_JD: 2415020.5,
+        EPOCH_DAY_GANZHI_INDEX: 10,
     };
 
-    // -------------------------------------------------------------------------
-    // 内部模块：通用工具 (Utils)
-    // -------------------------------------------------------------------------
-    const Utils = {
-        /**
-         * 高阶函数：用于记忆化（缓存）函数计算结果
-         * @param {Function} fn - 需要被记忆化的纯函数
-         * @returns {Function} - 带有缓存功能的函数
-         */
+    // 模块：干支相关计算
+    const _ganzhiModule = {
+        init: function() {
+            if (_constants.JIAZI.length > 0) return;
+            // 生成60甲子表
+            for (let i = 0; i < 60; i++) {
+                const gan = _constants.TIAN_GAN[i % 10];
+                const zhi = _constants.DI_ZHI[i % 12];
+                _constants.JIAZI.push(gan + zhi);
+            }
+        },
+        // 根据索引获取干支
+        getFromIndex: function(index) {
+            const safeIndex = (index % 60 + 60) % 60; // 确保索引为正数
+            return _constants.JIAZI[safeIndex];
+        },
+        // "日上起时法" - 根据日干和时支计算时柱
+        getHourPillar: function(dayGanIndex, hourZhiIndex) {
+            // 甲己日起甲子时, 乙庚日起丙子时, 丙辛日起戊子时, 丁壬日起庚子时, 戊癸日起壬子时
+            const startGanIndex = (dayGanIndex % 5) * 2;
+            const hourGanIndex = (startGanIndex + hourZhiIndex) % 10;
+            return _constants.TIAN_GAN[hourGanIndex] + _constants.DI_ZHI[hourZhiIndex];
+        }
+    };
+
+    // 模块：天文计算
+    const _astroModule = {
+        // 节气计算的缓存
+        solarTermCache: {},
+
+        // 高阶函数，用于实现缓存（记忆化）
         memoize: function(fn) {
-            const cache = {};
-            return function(...args) {
-                const key = JSON.stringify(args);
-                if (cache[key]) {
-                    return cache[key];
+            return (year) => {
+                if (this.solarTermCache[year]) {
+                    return this.solarTermCache[year];
                 }
-                const result = fn.apply(this, args);
-                cache[key] = result;
+                const result = fn(year);
+                this.solarTermCache[year] = result;
                 return result;
             };
         },
-        /**
-         * 将角度转换为弧度
-         * @param {number} deg - 角度
-         * @returns {number} - 弧度
-         */
-        degToRad: function(deg) {
-            return deg * Math.PI / 180;
-        },
-        /**
-         * 规范化角度到 0-360 范围
-         * @param {number} deg - 角度
-         * @returns {number} - 规范化后的角度
-         */
-        normalizeDeg: function(deg) {
-            let b = deg / 360;
-            let a = 360 * (b - Math.floor(b));
-            return a < 0? a + 360 : a;
-        }
-    };
 
-    // -------------------------------------------------------------------------
-    // 内部模块：时间转换器 (TimeConverter)
-    // -------------------------------------------------------------------------
-    const TimeConverter = {
-        /**
-         * 将公历日期时间转换为儒略日 (Julian Day)
-         * @param {number} year - 年
-         * @param {number} month - 月 (1-12)
-         * @param {number} day - 日
-         * @param {number} hour - 时 (0-23)
-         * @param {number} minute - 分 (0-59)
-         * @param {number} second - 秒 (0-59)
-         * @returns {number} - 儒略日
-         */
-        gregorianToJD: function(year, month, day, hour, minute, second) {
-            if (month <= 2) {
-                year -= 1;
-                month += 12;
+        // 公历转儒略日 (Julian Day Number)
+        getJDN: function(y, m, d, h, min, s) {
+            let a = Math.floor((14 - m) / 12);
+            let year = y + 4800 - a;
+            let month = m + 12 * a - 3;
+            const day = d + Math.floor((153 * month + 2) / 5) +
+                365 * year + Math.floor(year / 4) -
+                Math.floor(year / 100) + Math.floor(year / 400) - 32045;
+            const fraction = (h - 12) / 24 + min / 1440 + s / 86400;
+            return day + fraction;
+        },
+
+        // 计算太阳的黄经度数（一个精度足够的简化算法）
+        getSunEclipticLongitude: function(jdn) {
+            const n = jdn - 2451545.0;
+            const L = (280.460 + 0.9856474 * n) % 360; // 平黄经
+            const g = (357.528 + 0.9856003 * n) % 360; // 平近点角
+            const gRad = g * Math.PI / 180;
+            // 真黄经 (lambda)
+            const lambda = L + 1.915 * Math.sin(gRad) + 0.020 * Math.sin(2 * gRad);
+            return (lambda + 360) % 360;
+        },
+
+        // 寻找特定节气（太阳到达特定黄经度数）的精确儒略日
+        findSolarTermJDN: function(year, targetAngle) {
+            // 初始估算一个大概的儒略日
+            let jdn_approx = this.getJDN(year, 1, 1, 0, 0, 0) + (targetAngle / 360) * 365.2422;
+            // 通过迭代逼近，精确求解
+            for (let i = 0; i < 5; i++) {
+                const currentAngle = this.getSunEclipticLongitude(jdn_approx);
+                let angleDiff = targetAngle - currentAngle;
+                // 处理角度跨越360度的情况
+                if (angleDiff < -180) angleDiff += 360;
+                if (angleDiff > 180) angleDiff -= 360;
+                // 根据角度差调整儒略日，0.9856是太阳每日平均移动度数
+                jdn_approx += angleDiff / 0.9856;
             }
-            const A = Math.floor(year / 100);
-            const B = 2 - A + Math.floor(A / 4);
-            const dayFraction = (hour + minute / 60 + second / 3600) / 24;
-
-            return Math.floor(365.25 * (year + 4716)) + Math.floor(30.6001 * (month + 1)) + day + B - 1524.5 + dayFraction;
-        }
-    };
-
-    // -------------------------------------------------------------------------
-    // 内部模块：天文计算器 (AstroCalculator)
-    // -------------------------------------------------------------------------
-    const AstroCalculator = {
-        /**
-         * 计算均时差 (Equation of Time)
-         * @param {number} jd - 儒略日
-         * @returns {number} - 均时差（分钟）
-         */
-        calculateEoT: function(jd) {
-            const D = jd - Constants.JD_EPOCH;
-            const g = Utils.normalizeDeg(357.529 + 0.98560028 * D);
-            const q = Utils.normalizeDeg(280.459 + 0.98564736 * D);
-            const L = Utils.normalizeDeg(q + 1.915 * Math.sin(Utils.degToRad(g)) + 0.020 * Math.sin(Utils.degToRad(2 * g)));
-            const e = Utils.degToRad(23.439 - 0.00000036 * D);
-            let RA = Utils.normalizeDeg(Math.atan2(Math.cos(e) * Math.sin(Utils.degToRad(L)), Math.cos(Utils.degToRad(L))) * 180 / Math.PI);
-            
-            let delta = q - RA;
-            if (delta > 180) delta -= 360;
-            if (delta < -180) delta += 360;
-
-            return delta * 4; // 1度=4分钟
+            return jdn_approx;
         },
 
-        /**
-         * 计算真太阳时
-         * @param {number} year - 年
-         * @param {number} month - 月
-         * @param {number} day - 日
-         * @param {number} hour - 时
-         * @param {number} minute - 分
-         * @param {number} second - 秒
-         * @param {number} longitude - 经度 (东正西负)
-         * @returns {Date} - 包含真太阳时的Date对象
-         */
-        getTrueSolarTime: function(year, month, day, hour, minute, second, longitude) {
-            const jd = TimeConverter.gregorianToJD(year, month, day, hour, minute, second);
-            const eot = this.calculateEoT(jd); // 分钟
-            const longitudeCorrection = longitude * 4; // 分钟
-            
-            const totalOffsetMinutes = eot + longitudeCorrection;
-            
-            const utcDate = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
-            const trueSolarTime = new Date(utcDate.getTime() + totalOffsetMinutes * 60 * 1000);
-            
-            return trueSolarTime;
-        },
+        // 计算指定年份的所有24个节气
+        calculateAllSolarTerms: function(year) {
+            const terms = [];
+            // 八字年以立春为界，可能在公历年初，所以需要计算上一年数据以确保完整
+            const startYear = year - 1;
 
-        /**
-         * 计算太阳的黄经 (Ecliptic Longitude)
-         * @param {number} jd - 儒略日
-         * @returns {number} - 太阳黄经（度）
-         */
-        getSolarLongitude: function(jd) {
-            const n = jd - Constants.JD_EPOCH;
-            const L = Utils.normalizeDeg(280.460 + 0.9856474 * n);
-            const g = Utils.normalizeDeg(357.528 + 0.9856003 * n);
-            const gRad = Utils.degToRad(g);
-            const lambda = Utils.normalizeDeg(L + 1.915 * Math.sin(gRad) + 0.020 * Math.sin(2 * gRad));
-            return lambda;
-        },
+            for (let y = startYear; y <= year; y++) {
+                for (let i = 0; i < _constants.SOLAR_TERM_ANGLES.length; i++) {
+                    const angle = _constants.SOLAR_TERM_ANGLES[i];
+                    const termJDN = this.findSolarTermJDN(y, angle);
+                    
+                    // 过滤掉不需要的过早或过晚的节气，优化数据量
+                    const termDate = this.jdnToDate(termJDN, 8); // 使用东八区时间进行粗略检查
+                    if (termDate.getFullYear() < year && termDate.getMonth() < 10) continue;
+                    if (termDate.getFullYear() > year) continue;
 
-        /**
-         * 寻找特定太阳黄经对应的儒略日（节气时刻）
-         * @param {number} year - 公历年份
-         * @param {number} targetLongitude - 目标黄经（度）
-         * @returns {number} - 儒略日
-         */
-        findSolarTermJD: function(year, targetLongitude) {
-            // 使用一个近似值开始迭代，通常节气在每月特定日期附近
-            let y = year;
-            let m = Math.floor(targetLongitude / 30) + 1;
-            if (m < 3) y--; // 估算基于3月开始
-            let initialJD = TimeConverter.gregorianToJD(y, m, 20, 0, 0, 0);
-
-            let jd = initialJD;
-            for (let i = 0; i < 5; i++) { // 迭代5次足以达到高精度
-                let currentLon = this.getSolarLongitude(jd);
-                let diff = targetLongitude - currentLon;
-                // 处理跨越0/360度的情况
-                if (diff < -180) diff += 360;
-                if (diff > 180) diff -= 360;
-                // 太阳每天大约移动1度
-                jd += diff;
+                    terms.push({
+                        angle: angle,
+                        jdn: termJDN
+                    });
+                }
             }
-            return jd;
-        }
-    };
-    // 对节气计算进行记忆化，提高重复查询性能
-    AstroCalculator.findSolarTermJD = Utils.memoize(AstroCalculator.findSolarTermJD);
-
-
-    // -------------------------------------------------------------------------
-    // 内部模块：四柱生成器 (PillarGenerator)
-    // -------------------------------------------------------------------------
-    const PillarGenerator = {
-        /**
-         * 根据索引获取干支
-         * @param {number} index - 在60甲子周期中的索引 (0-59)
-         * @returns {{stem: string, branch: string}}
-         */
-        getGanzhi: function(index) {
-            return {
-                stem: Constants.HEAVENLY_STEMS[index % 10],
-                branch: Constants.EARTHLY_BRANCHES[index % 12]
-            };
+            // 按时间顺序排序
+            terms.sort((a, b) => a.jdn - b.jdn);
+            return terms;
         },
-
-        /**
-         * 计算日柱
-         * @param {number} jd - 儒略日
-         * @returns {{stem: string, branch: string, index: number}}
-         */
-        getDayPillar: function(jd) {
-            // 中国时区为 UTC+8，日柱以子时为界，需考虑本地午夜
-            // JD的整数部分对应UTC中午12点，所以 JD - 0.5 对应UTC午夜0点
-            // 加上8小时时区偏移，即 8/24 = 1/3 天
-            const chinaJD = jd + 8 / 24;
-            const dayNumber = Math.floor(chinaJD - 0.5);
-            const diff = dayNumber - Math.floor(Constants.DAY_PILLAR_EPOCH_JD - 0.5);
-            const index = (Constants.DAY_PILLAR_EPOCH_INDEX + diff) % 60;
-            const adjustedIndex = index < 0? index + 60 : index;
+        
+        // 儒略日转公历日期对象
+        jdnToDate: function(jdn, timezoneOffset) {
+            const jdn_utc = jdn - timezoneOffset / 24.0;
+            const Z = Math.floor(jdn_utc + 0.5);
+            const F = (jdn_utc + 0.5) - Z;
             
-            const pillar = this.getGanzhi(adjustedIndex);
-            return {...pillar, index: adjustedIndex };
-        },
-
-        /**
-         * 计算年柱
-         * @param {number} birthJD - 出生时刻的儒略日
-         * @param {number} gregorianYear - 出生公历年份
-         * @returns {{stem: string, branch: string, index: number}}
-         */
-        getYearPillar: function(birthJD, gregorianYear) {
-            const lichunJD = AstroCalculator.findSolarTermJD(gregorianYear, 315); // 立春黄经为315度
-            
-            let baziYear = gregorianYear;
-            if (birthJD < lichunJD) {
-                baziYear = gregorianYear - 1;
-            }
-
-            const yearDiff = baziYear - Constants.YEAR_PILLAR_EPOCH_GREGORIAN;
-            const index = (Constants.YEAR_PILLAR_EPOCH_INDEX + yearDiff) % 60;
-            const adjustedIndex = index < 0? index + 60 : index;
-            
-            const pillar = this.getGanzhi(adjustedIndex);
-            return {...pillar, index: adjustedIndex };
-        },
-
-        /**
-         * 计算月柱
-         * @param {number} birthJD - 出生时刻的儒略日
-         * @param {number} yearPillarIndex - 年柱的索引
-         * @returns {{stem: string, branch: string, index: number}}
-         */
-        getMonthPillar: function(birthJD, yearPillarIndex) {
-            const solarLon = AstroCalculator.getSolarLongitude(birthJD);
-            
-            // 地支从寅月(index=2)开始，对应330度节气(雨水)到345度(惊蛰)之间
-            // 315(立春)到330(雨水)是正月
-            let branchIndex;
-            if (solarLon >= 315 && solarLon < 345) {
-                branchIndex = 2; // 寅月
-            } else if (solarLon >= 345 |
-
-| solarLon < 15) {
-                branchIndex = 3; // 卯月
+            let A;
+            if (Z < 2299161) {
+                A = Z;
             } else {
-                branchIndex = Math.floor((solarLon + 15) / 30) + 2;
-                if (branchIndex >= 14) branchIndex -= 12;
+                const alpha = Math.floor((Z - 1867216.25) / 36524.25);
+                A = Z + 1 + alpha - Math.floor(alpha / 4);
             }
-            
-            const yearStemIndex = yearPillarIndex % 10;
-            const lookupIndex = Math.floor(yearStemIndex / 2);
-            const stemIndex = Constants.MONTH_STEM_LOOKUP[lookupIndex][branchIndex];
-            
-            return {
-                stem: Constants.HEAVENLY_STEMS[stemIndex],
-                branch: Constants.EARTHLY_BRANCHES[branchIndex],
-                index: stemIndex * 10 + branchIndex // Not a standard Ganzhi index, just for data
-            };
-        },
 
-        /**
-         * 计算时柱
-         * @param {Date} trueSolarTime - 真太阳时
-         * @param {number} dayPillarIndex - 日柱的索引
-         * @returns {{stem: string, branch: string, index: number}}
-         */
-        getHourPillar: function(trueSolarTime, dayPillarIndex) {
-            const hour = trueSolarTime.getUTCHours();
-            const branchIndex = Math.floor((hour + 1) / 2) % 12;
+            const B = A + 1524;
+            const C = Math.floor((B - 122.1) / 365.25);
+            const D = Math.floor(365.25 * C);
+            const E = Math.floor((B - D) / 30.6001);
 
-            const dayStemIndex = dayPillarIndex % 10;
-            const lookupIndex = Math.floor(dayStemIndex / 2);
-            const stemIndex = Constants.HOUR_STEM_LOOKUP[lookupIndex][branchIndex];
+            const day = B - D - Math.floor(30.6001 * E) + F;
+            const month = (E < 14) ? E - 1 : E - 13;
+            const year = (month > 2) ? C - 4716 : C - 4715;
 
-            return {
-                stem: Constants.HEAVENLY_STEMS[stemIndex],
-                branch: Constants.EARTHLY_BRANCHES[branchIndex],
-                index: stemIndex * 10 + branchIndex // Not a standard Ganzhi index
-            };
+            const hours = (day - Math.floor(day)) * 24;
+            const minutes = (hours - Math.floor(hours)) * 60;
+            const seconds = (minutes - Math.floor(minutes)) * 60;
+
+            return new Date(Date.UTC(year, month - 1, Math.floor(day), Math.floor(hours), Math.floor(minutes), Math.floor(seconds)));
         }
     };
+    
+    // --- 公开的 Wbazi 类 ---
+    
+    function Wbazi(year, month, day, hour, minute, second, longitude, gender) {
+        this.year = year;
+        this.month = month;
+        this.day = day;
+        this.hour = hour;
+        this.minute = minute;
+        this.second = second || 0;
+        this.longitude = longitude;
+        this.gender = gender; // 性别: '男' 或 '女'
 
+        // 初始化模块
+        _ganzhiModule.init();
+        // 对节气计算函数应用缓存
+        _astroModule.calculateAllSolarTerms = _astroModule.memoize(_astroModule.calculateAllSolarTerms.bind(_astroModule));
 
-    // -------------------------------------------------------------------------
-    // 公开类：WBazi
-    // -------------------------------------------------------------------------
-    class WBazi {
-        /**
-         * WBazi 构造函数
-         * @param {number} year - 公历年
-         * @param {number} month - 公历月 (1-12)
-         * @param {number} day - 公历日 (1-31)
-         * @param {number} hour - 本地时间小时 (0-23)
-         * @param {number} minute - 本地时间分钟 (0-59)
-         * @param {number} second - 本地时间秒 (0-59)
-         * @param {number} longitude - 出生地经度 (东正西负)
-         */
-        constructor(year, month, day, hour, minute, second, longitude) {
-            this.input = { year, month, day, hour, minute, second, longitude };
-            this.pillars = this._calculateAllPillars();
-        }
-
-        _calculateAllPillars() {
-            const { year, month, day, hour, minute, second, longitude } = this.input;
-
-            // 1. 计算儒略日
-            const birthJD = TimeConverter.gregorianToJD(year, month, day, hour, minute, second);
-            
-            // 2. 计算真太阳时
-            const trueSolarTime = AstroCalculator.getTrueSolarTime(year, month, day, hour, minute, second, longitude);
-
-            // 3. 计算四柱
-            const dayPillar = PillarGenerator.getDayPillar(birthJD);
-            const yearPillar = PillarGenerator.getYearPillar(birthJD, year);
-            const monthPillar = PillarGenerator.getMonthPillar(birthJD, yearPillar.index);
-            const hourPillar = PillarGenerator.getHourPillar(trueSolarTime, dayPillar.index);
-
-            return {
-                year: { stem: yearPillar.stem, branch: yearPillar.branch },
-                month: { stem: monthPillar.stem, branch: monthPillar.branch },
-                day: { stem: dayPillar.stem, branch: dayPillar.branch },
-                hour: { stem: hourPillar.stem, branch: hourPillar.branch }
-            };
-        }
-
-        /**
-         * 以对象形式获取四柱
-         * @returns {{year: {stem, branch}, month: {stem, branch}, day: {stem, branch}, hour: {stem, branch}}}
-         */
-        getPillars() {
-            return this.pillars;
-        }
-
-        /**
-         * 以文本数组形式获取八字
-         * @returns {string} - ['年干', '年支', '月干', '月支', '日干', '日支', '时干', '时支']
-         */
-        getBazi() {
-            return [
-                this.pillars.year.stem, this.pillars.year.branch,
-                this.pillars.month.stem, this.pillars.month.branch,
-                this.pillars.day.stem, this.pillars.day.branch,
-                this.pillars.hour.stem, this.pillars.hour.branch
-            ];
-        }
+        // 执行核心计算
+        this._calculate();
     }
 
-    // 将 WBazi 类挂载到全局对象上
-    if (typeof window!== 'undefined') {
-        window.WBazi = WBazi;
-    }
+    Wbazi.prototype._calculate = function() {
+        // 1. 计算真太阳时
+        const date = new Date(this.year, this.month - 1, this.day, this.hour, this.minute, this.second);
+        // 客户端所在时区与UTC的小时差
+        const timezoneOffset = date.getTimezoneOffset() / -60; 
+        // 客户端时区的中央经线
+        const timeZoneMeridian = timezoneOffset * 15;
 
-})(typeof window!== 'undefined'? window : this);
+        // 经度差修正 (分钟)
+        const longitudeCorrection = (this.longitude - timeZoneMeridian) * 4;
+
+        // 真平太阳时差 (Equation of Time) 修正 (分钟)
+        const jdn_utc = _astroModule.getJDN(this.year, this.month, this.day, this.hour, this.minute, this.second) - timezoneOffset/24;
+        const sunLon = _astroModule.getSunEclipticLongitude(jdn_utc);
+        const jdn_spring_equinox = _astroModule.findSolarTermJDN(this.year, 0); // 春分点
+        const daysSinceEquinox = jdn_utc - jdn_spring_equinox;
+        const B = (360 / 365.2422) * daysSinceEquinox * (Math.PI / 180);
+        const eot = 9.87 * Math.sin(2 * B) - 7.53 * Math.cos(B) - 1.5 * Math.sin(B);
+
+        const totalCorrectionMinutes = longitudeCorrection + eot;
+        const trueSolarTime = new Date(date.getTime() + totalCorrectionMinutes * 60 * 1000);
+        
+        this.trueSolarTime = trueSolarTime; // 保存真太阳时以备后用
+        
+        // 使用UTC方法提取真太阳时的日期和时间组件
+        const tst_year = trueSolarTime.getUTCFullYear();
+        const tst_month = trueSolarTime.getUTCMonth() + 1;
+        const tst_day = trueSolarTime.getUTCDate();
+        const tst_hour = trueSolarTime.getUTCHours();
+        const tst_min = trueSolarTime.getUTCMinutes();
+        const tst_sec = trueSolarTime.getUTCSeconds();
+
+        // 计算真太阳时对应的儒略日 (基于提取的UTC组件)
+        const trueSolarJDN = _astroModule.getJDN(tst_year, tst_month, tst_day, tst_hour, tst_min, tst_sec);
+
+        // 2. 获取当年的节气数据
+        const solarTerms = _astroModule.calculateAllSolarTerms(this.year);
+        
+        // --- 开始确定四柱 ---
+        
+        // a) 年柱
+        // 找到当年的立春 (黄经315度)
+        let lichunJDN = solarTerms.find(term => term.angle === 315 && _astroModule.jdnToDate(term.jdn, 0).getUTCFullYear() === this.year)?.jdn;
+        if (!lichunJDN) { // 如果立春在1月或2月，它可能是在前一年的计算结果中
+             const prevYearTerms = _astroModule.calculateAllSolarTerms(this.year - 1);
+             lichunJDN = prevYearTerms.find(term => term.angle === 315)?.jdn;
+        }
+        // 如果出生时间早于立春，则算作上一年
+        let baziYear = trueSolarJDN >= lichunJDN ? this.year : this.year - 1;
+        this.yearPillar = _ganzhiModule.getFromIndex(baziYear - 4);
+
+        // b) 月柱
+        // 查找出生时间所属的节（注意是“节”而不是“气”）
+        const jieqi = solarTerms.filter(term => term.angle % 30 === 15).reverse(); // 修正为节 (angle % 30 === 15)
+        let monthZhiIndex = 0;
+        for (const term of jieqi) {
+            if (trueSolarJDN >= term.jdn) {
+                // 黄经度数转地支索引: 修正映射逻辑
+                const adjustedAngle = (term.angle - 315 + 360) % 360;
+                monthZhiIndex = (Math.floor(adjustedAngle / 30) + 2) % 12;
+                break;
+            }
+        }
+        const yearGanIndex = (baziYear - 4) % 10;
+        // 月干公式: 使用五虎遁正确计算
+        const startGanForYin = ((yearGanIndex % 5) * 2 + 2) % 10;
+        const baziMonthNum = (monthZhiIndex - 2 + 12) % 12 + 1;
+        const monthGanIndex = (startGanForYin + baziMonthNum - 1) % 10;
+        this.monthPillar = _constants.TIAN_GAN[monthGanIndex] + _constants.DI_ZHI[monthZhiIndex];
+
+        // c) 日柱
+        // 日柱的计算基于真太阳时的日期 (日界为子正，即真太阳时午夜)
+        const jdnForDayPillar = Math.floor(trueSolarJDN - 0.5);
+        const dayOffset = jdnForDayPillar - Math.floor(_constants.EPOCH_JD - 0.5);
+        const dayIndex = _constants.EPOCH_DAY_GANZHI_INDEX + dayOffset;
+        this.dayPillar = _ganzhiModule.getFromIndex(dayIndex);
+
+        // d) 时柱
+        const dayGanIndexOfPillar = (_constants.JIAZI.indexOf(this.dayPillar)) % 10;
+        // 根据真太阳时的小时确定时辰地支 (特殊处理23点-24点为次日子时)
+        const hourZhiIndex = Math.floor((tst_hour + 1) / 2) % 12;
+        this.hourPillar = _ganzhiModule.getHourPillar(dayGanIndexOfPillar, hourZhiIndex);
+    };
+    
+    /**
+     * 获取计算出的生辰八字
+     * @returns {string[]} 一个包含四柱干支的数组 [年柱, 月柱, 日柱, 时柱]
+     */
+    Wbazi.prototype.getBazi = function() {
+        return [this.yearPillar, this.monthPillar, this.dayPillar, this.hourPillar];
+    };
+    
+    // 返回 Wbazi 类
+    return Wbazi;
+}));
