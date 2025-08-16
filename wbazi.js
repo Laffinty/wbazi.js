@@ -33,6 +33,51 @@
         // 甲戌的干支索引是 10。
         EPOCH_JD: 2415020.5,
         EPOCH_DAY_GANZHI_INDEX: 10,
+        FIVE_ELEMENTS_GAN: {
+            '甲': '木', '乙': '木',
+            '丙': '火', '丁': '火',
+            '戊': '土', '己': '土',
+            '庚': '金', '辛': '金',
+            '壬': '水', '癸': '水'
+        },
+        HIDDEN_GANS: {
+            '子': ['癸'],
+            '丑': ['己', '癸', '辛'],
+            '寅': ['甲', '丙', '戊'],
+            '卯': ['乙'],
+            '辰': ['戊', '乙', '癸'],
+            '巳': ['丙', '庚', '戊'],
+            '午': ['丁', '己'],
+            '未': ['己', '丁', '乙'],
+            '申': ['庚', '壬', '戊'],
+            '酉': ['辛'],
+            '戌': ['戊', '辛', '丁'],
+            '亥': ['壬', '甲']
+        },
+        WUXING_RELATIONS: {
+            '生': { // 键为被生者，值为生者
+                '木': '水',
+                '火': '木',
+                '土': '火',
+                '金': '土',
+                '水': '金'
+            },
+            '克': { // 键为克者，值为被克者
+                '木': '土',
+                '火': '金',
+                '土': '水',
+                '金': '木',
+                '水': '火'
+            }
+        },
+        SEASONAL_POWER: {
+            '木': {'旺': ['寅', '卯'], '相': ['辰'], '休': ['巳', '午', '未'], '囚': ['申', '酉', '戌'], '死': ['亥', '子', '丑']},
+            '火': {'旺': ['巳', '午'], '相': ['未'], '休': ['申', '酉', '戌'], '囚': ['亥', '子', '丑'], '死': ['寅', '卯', '辰']},
+            '金': {'旺': ['申', '酉'], '相': ['戌'], '休': ['亥', '子', '丑'], '囚': ['寅', '卯', '辰'], '死': ['巳', '午', '未']},
+            '水': {'旺': ['亥', '子'], '相': ['丑'], '休': ['寅', '卯', '辰'], '囚': ['巳', '午', '未'], '死': ['申', '酉', '戌']},
+            '土': {'旺': ['辰', '戌', '丑', '未'], '相': ['巳', '午'], '休': ['申', '酉'], '囚': ['亥', '子'], '死': ['寅', '卯']} // 土的简化处理
+        },
+        SEASONAL_SCORES: {'旺': 5, '相': 3, '休': 1, '囚': 0, '死': -2}
     };
 
     // 模块：干支相关计算
@@ -286,6 +331,88 @@
      */
     Wbazi.prototype.getBazi = function() {
         return [this.yearPillar, this.monthPillar, this.dayPillar, this.hourPillar];
+    };
+    
+    /**
+     * 计算身强身弱，返回0-10的整数，0为极弱，10为极强
+     * @returns {number} 身强身弱指数
+     */
+    Wbazi.prototype.getBodyStrength = function() {
+        const pillars = [this.yearPillar, this.monthPillar, this.dayPillar, this.hourPillar];
+        const gans = pillars.map(p => p[0]);
+        const zhis = pillars.map(p => p[1]);
+        const day_gan = gans[2];
+        const day_wu = _constants.FIVE_ELEMENTS_GAN[day_gan];
+        const month_zhi = zhis[1];
+
+        // 计算五行关系函数
+        const get_wuxing_relation = (day_wu, other_wu) => {
+            if (day_wu === other_wu) return '比';
+            if (_constants.WUXING_RELATIONS['生'][day_wu] === other_wu) return '印';
+            if (_constants.WUXING_RELATIONS['生'][other_wu] === day_wu) return '食';
+            if (_constants.WUXING_RELATIONS['克'][day_wu] === other_wu) return '财';
+            if (_constants.WUXING_RELATIONS['克'][other_wu] === day_wu) return '官';
+            return null;
+        };
+
+        // 藏干权重函数
+        const get_hidden_weights = (length) => {
+            if (length === 1) return [1];
+            if (length === 2) return [0.7, 0.3];
+            if (length === 3) return [0.6, 0.25, 0.15];
+            return [];
+        };
+
+        let same_class_score = 0;
+        let diff_class_score = 0;
+
+        // 天干得分（年、月、时干，不包括日干）
+        [0, 1, 3].forEach(idx => {
+            const other_gan = gans[idx];
+            const other_wu = _constants.FIVE_ELEMENTS_GAN[other_gan];
+            const rel = get_wuxing_relation(day_wu, other_wu);
+            if (['比', '印'].includes(rel)) {
+                same_class_score += 1;
+            } else {
+                diff_class_score += 1;
+            }
+        });
+
+        // 地支得分（所有地支，包括藏干）
+        zhis.forEach((zhi, idx) => {
+            const hidden = _constants.HIDDEN_GANS[zhi] || [];
+            const weights = get_hidden_weights(hidden.length);
+            let branch_weight_multiplier = (idx === 1) ? 2 : 1; // 月支权重翻倍
+            hidden.forEach((h_gan, h_idx) => {
+                const h_wu = _constants.FIVE_ELEMENTS_GAN[h_gan];
+                const rel = get_wuxing_relation(day_wu, h_wu);
+                const weight = weights[h_idx] * branch_weight_multiplier;
+                if (['比', '印'].includes(rel)) {
+                    same_class_score += weight;
+                } else {
+                    diff_class_score += weight;
+                }
+            });
+        });
+
+        // 季节调整得分
+        let seasonal_score = 0;
+        for (const [power, zhi_list] of Object.entries(_constants.SEASONAL_POWER[day_wu])) {
+            if (zhi_list.includes(month_zhi)) {
+                seasonal_score = _constants.SEASONAL_SCORES[power];
+                break;
+            }
+        }
+        if (seasonal_score > 0) {
+            same_class_score += seasonal_score;
+        } else {
+            diff_class_score += Math.abs(seasonal_score);
+        }
+
+        // 计算强度指数
+        const total = same_class_score + diff_class_score;
+        const strength = (total > 0) ? (same_class_score / total) * 10 : 0;
+        return Math.round(strength);
     };
     
     // 返回 Wbazi 类
